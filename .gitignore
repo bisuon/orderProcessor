@@ -1,0 +1,23 @@
+# Compiled / build output
+target/
+*.class
+
+# IDEs
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.classpath
+.project
+
+# Maven wrapper download cache
+.mvn/wrapper/maven-wrapper.jar
+
+# OS files
+.DS_Store
+
+# Logs
+*.log
+
