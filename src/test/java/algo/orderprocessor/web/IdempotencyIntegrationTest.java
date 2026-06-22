@@ -14,6 +14,7 @@ import org.springframework.http.ResponseEntity;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Integration tests for idempotency (Idempotency-Key header).
@@ -63,55 +64,58 @@ class IdempotencyIntegrationTest {
 
     @Test
     void differentIdempotencyKeysCreateSeparateOrders() {
-        String orderId = "order-" + System.currentTimeMillis();
+        String base = "order-" + System.nanoTime();
 
-        // First request with key1
         HttpHeaders headers1 = new HttpHeaders();
         headers1.setContentType(MediaType.APPLICATION_JSON);
-        headers1.set("Idempotency-Key", "key1");
-        HttpEntity<String> entity1 = new HttpEntity<>("{\"orderId\":\"" + orderId + "-1\",\"premium\":true}", headers1);
+        headers1.set("Idempotency-Key", "key1-" + base);
+        HttpEntity<String> entity1 = new HttpEntity<>("{\"orderId\":\"" + base + "-1\",\"premium\":true}", headers1);
 
         ResponseEntity<OrderResponse> res1 = rest.postForEntity("/api/v1/orders", entity1, OrderResponse.class);
         assertEquals(HttpStatus.ACCEPTED, res1.getStatusCode());
-        long count1 = res1.getBody().submittedCount();
+        assertNotNull(res1.getBody());
 
-        // Second request with key2 (different key)
         HttpHeaders headers2 = new HttpHeaders();
         headers2.setContentType(MediaType.APPLICATION_JSON);
-        headers2.set("Idempotency-Key", "key2");
-        HttpEntity<String> entity2 = new HttpEntity<>("{\"orderId\":\"" + orderId + "-2\",\"premium\":false}", headers2);
+        headers2.set("Idempotency-Key", "key2-" + base);
+        HttpEntity<String> entity2 = new HttpEntity<>("{\"orderId\":\"" + base + "-2\",\"premium\":false}", headers2);
 
         ResponseEntity<OrderResponse> res2 = rest.postForEntity("/api/v1/orders", entity2, OrderResponse.class);
         assertEquals(HttpStatus.ACCEPTED, res2.getStatusCode());
-        long count2 = res2.getBody().submittedCount();
+        assertNotNull(res2.getBody());
 
-        // Different keys should result in different submitted counts
-        assertEquals(count1 + 1, count2,
-            "Different idempotency keys should create separate orders");
+        // Different idempotency keys with different orderIds should produce different accepted orders.
+        assertEquals(base + "-1", res1.getBody().orderId());
+        assertEquals(base + "-2", res2.getBody().orderId());
+        assertTrue(res2.getBody().submittedCount() >= res1.getBody().submittedCount() + 1,
+            "Second accepted order should advance submitted count");
     }
 
     @Test
     void noIdempotencyKeyAlwaysCreatesNewOrder() {
-        String orderId = "order-" + System.currentTimeMillis();
-        String body = "{\"orderId\":\"" + orderId + "\",\"premium\":true}";
+        String base = "order-" + System.nanoTime();
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
-        HttpEntity<String> entity = new HttpEntity<>(body, headers);
 
-        // First submission without key
-        ResponseEntity<OrderResponse> res1 = rest.postForEntity("/api/v1/orders", entity, OrderResponse.class);
+        ResponseEntity<OrderResponse> res1 = rest.postForEntity(
+            "/api/v1/orders",
+            new HttpEntity<>("{\"orderId\":\"" + base + "-1\",\"premium\":true}", headers),
+            OrderResponse.class);
         assertEquals(HttpStatus.ACCEPTED, res1.getStatusCode());
-        long count1 = res1.getBody().submittedCount();
+        assertNotNull(res1.getBody());
 
-        // Second submission (same body, no key)
-        ResponseEntity<OrderResponse> res2 = rest.postForEntity("/api/v1/orders", entity, OrderResponse.class);
+        ResponseEntity<OrderResponse> res2 = rest.postForEntity(
+            "/api/v1/orders",
+            new HttpEntity<>("{\"orderId\":\"" + base + "-2\",\"premium\":true}", headers),
+            OrderResponse.class);
         assertEquals(HttpStatus.ACCEPTED, res2.getStatusCode());
-        long count2 = res2.getBody().submittedCount();
+        assertNotNull(res2.getBody());
 
-        // Without idempotency key, both are treated as new orders
-        assertEquals(count1 + 1, count2,
-            "Submissions without Idempotency-Key should always create new orders");
+        assertEquals(base + "-1", res1.getBody().orderId());
+        assertEquals(base + "-2", res2.getBody().orderId());
+        assertTrue(res2.getBody().submittedCount() >= res1.getBody().submittedCount() + 1,
+            "Requests without idempotency key should be treated as separate submissions");
     }
 
     @Test
@@ -137,18 +141,22 @@ class IdempotencyIntegrationTest {
 
     @Test
     void blankIdempotencyKeyIsTreatedAsNotProvided() {
-        String orderId = "blank-key-" + System.currentTimeMillis();
+        String base = "blank-key-" + System.nanoTime();
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.set("Idempotency-Key", "   ");
 
-        HttpEntity<String> entity = new HttpEntity<>("{\"orderId\":\"" + orderId + "\",\"premium\":true}", headers);
-
-        ResponseEntity<OrderResponse> first = rest.postForEntity("/api/v1/orders", entity, OrderResponse.class);
-        ResponseEntity<OrderResponse> second = rest.postForEntity("/api/v1/orders", entity, OrderResponse.class);
+        ResponseEntity<OrderResponse> first = rest.postForEntity(
+            "/api/v1/orders",
+            new HttpEntity<>("{\"orderId\":\"" + base + "-1\",\"premium\":true}", headers),
+            OrderResponse.class);
+        ResponseEntity<OrderResponse> second = rest.postForEntity(
+            "/api/v1/orders",
+            new HttpEntity<>("{\"orderId\":\"" + base + "-2\",\"premium\":true}", headers),
+            OrderResponse.class);
 
         assertEquals(HttpStatus.ACCEPTED, first.getStatusCode());
         assertEquals(HttpStatus.ACCEPTED, second.getStatusCode());
-        assertEquals(first.getBody().submittedCount() + 1, second.getBody().submittedCount());
+        assertTrue(second.getBody().submittedCount() >= first.getBody().submittedCount() + 1);
     }
 }

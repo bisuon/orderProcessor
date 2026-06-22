@@ -84,6 +84,19 @@ class OrderControllerTest {
     }
 
     @Test
+    void duplicateOrderIdReturns409() throws Exception {
+        doThrow(new IllegalStateException("Order with id 'o-1' already exists"))
+            .when(orderService).submit(any(Order.class));
+        when(idempotencyStore.lookup(anyString(), anyString())).thenReturn(IdempotencyStore.LookupResult.miss());
+
+        mockMvc.perform(post("/api/v1/orders")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"orderId\":\"o-1\",\"premium\":true}"))
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("already exists")));
+    }
+
+    @Test
     void metricsAreReturned() throws Exception {
         when(orderService.metrics()).thenReturn(new MetricsResponse(50, 50, 0, 0, 25, 25, true));
 

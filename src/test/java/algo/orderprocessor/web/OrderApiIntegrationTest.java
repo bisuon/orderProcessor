@@ -59,6 +59,24 @@ class OrderApiIntegrationTest {
         assertTrue(res.getBody().contains("UP"));
     }
 
+    @Test
+    void duplicateOrderIdIsRejectedWithConflict() {
+        String orderId = "dup-" + System.nanoTime();
+
+        ResponseEntity<OrderResponse> first = rest.postForEntity(
+            "/api/v1/orders",
+            json("{\"orderId\":\"" + orderId + "\",\"premium\":true}"),
+            OrderResponse.class);
+        assertEquals(HttpStatus.ACCEPTED, first.getStatusCode());
+
+        ResponseEntity<String> second = rest.postForEntity(
+            "/api/v1/orders",
+            json("{\"orderId\":\"" + orderId + "\",\"premium\":false}"),
+            String.class);
+        assertEquals(HttpStatus.CONFLICT, second.getStatusCode());
+        assertTrue(second.getBody().contains("already exists"));
+    }
+
     private MetricsResponse awaitProcessed(long expectedSubmitted, long expectedProcessed) {
         Instant deadline = Instant.now().plus(Duration.ofSeconds(5));
         MetricsResponse metrics = rest.getForObject("/api/v1/metrics", MetricsResponse.class);
@@ -84,4 +102,3 @@ class OrderApiIntegrationTest {
         }
     }
 }
-

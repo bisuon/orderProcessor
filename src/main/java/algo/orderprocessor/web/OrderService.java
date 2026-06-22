@@ -59,8 +59,25 @@ public class OrderService {
     /** Submit an order for asynchronous, priority-ordered processing. */
     public void submit(Order order) {
         OrderRecord record = OrderRecord.newSubmitted(order.orderId(), order.isPremium(), order.creationTime());
-        orderStore.put(order.orderId(), record);
-        processor.submitOrder(order);
+
+        // Reject duplicate order IDs so UI/API clients can rely on stable order identity.
+        synchronized (orderStore) {
+            if (orderStore.containsKey(order.orderId())) {
+                throw new IllegalStateException("Order with id '" + order.orderId() + "' already exists");
+            }
+            orderStore.put(order.orderId(), record);
+        }
+
+        try {
+            processor.submitOrder(order);
+        } catch (RuntimeException ex) {
+            // Roll back the record if enqueueing fails (e.g., shutdown race).
+            synchronized (orderStore) {
+                orderStore.remove(order.orderId());
+            }
+            throw ex;
+        }
+
         log.debug("Accepted order id={} premium={}", order.orderId(), order.isPremium());
     }
 
@@ -120,4 +137,3 @@ public class OrderService {
         }
     }
 }
-
