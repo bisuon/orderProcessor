@@ -125,6 +125,36 @@ class OrderProcessorTest {
         assertEquals(2, processed.get());
     }
 
+    @Test
+    void handlerExceptionIncrementsFailedCountAndProcessingContinues() {
+        AtomicInteger successful = new AtomicInteger();
+
+        try (OrderProcessor processor = new OrderProcessor(2, order -> {
+            if (order.orderId().startsWith("bad-")) {
+                throw new IllegalArgumentException("simulated failure");
+            }
+            successful.incrementAndGet();
+        })) {
+            processor.startProcessing();
+            processor.submitOrder(new Order("bad-1", true, 1L));
+            processor.submitOrder(new Order("ok-1", false, 2L));
+            processor.submitOrder(new Order("ok-2", false, 3L));
+            processor.awaitIdle(Duration.ofSeconds(2));
+            processor.shutdown();
+
+            assertEquals(3, processor.getSubmittedCount());
+            assertEquals(2, processor.getProcessedCount());
+            assertEquals(1, processor.getFailedCount());
+            assertEquals(2, successful.get());
+        }
+    }
+
+    @Test
+    void constructorRejectsNonPositiveWorkerCount() {
+        assertThrows(IllegalArgumentException.class, () -> new OrderProcessor(0, order -> { }));
+        assertThrows(IllegalArgumentException.class, () -> new OrderProcessor(-1, order -> { }));
+    }
+
     private static void await(CountDownLatch latch, long timeout, TimeUnit unit) {
         try {
             assertTrue(latch.await(timeout, unit), "timed out waiting for latch");
@@ -134,4 +164,3 @@ class OrderProcessorTest {
         }
     }
 }
-

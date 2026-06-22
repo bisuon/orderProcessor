@@ -1,0 +1,28 @@
+server:
+  port: ${PORT:8080}
+  shutdown: graceful
+
+spring:
+  application:
+    name: order-processor
+  lifecycle:
+    timeout-per-shutdown-phase: 35s
+
+# Number of worker threads in the concurrent engine. 0 = use available CPU count.
+app:
+  workers: ${WORKERS:0}
+
+# Expose health + metrics over Actuator (standard observability surface).
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, metrics
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    algo.orderprocessor: INFO
+

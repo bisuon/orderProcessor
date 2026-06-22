@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Order Processor</title>
+    <style>
+        :root { --bg:#0f172a; --card:#1e293b; --accent:#38bdf8; --premium:#f59e0b; --text:#e2e8f0; --muted:#94a3b8; }
+        * { box-sizing: border-box; }
+        body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+               background:var(--bg); color:var(--text); padding:2rem; }
+        h1 { margin:0 0 .25rem; font-size:1.5rem; }
+        p.sub { color:var(--muted); margin:0 0 1.5rem; }
+        .grid { display:grid; gap:1.5rem; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); max-width:900px; }
+        .card { background:var(--card); border-radius:12px; padding:1.25rem 1.5rem; box-shadow:0 4px 20px rgba(0,0,0,.3); }
+        .card h2 { margin:0 0 1rem; font-size:1rem; color:var(--accent); text-transform:uppercase; letter-spacing:.05em; }
+        label { display:block; font-size:.8rem; color:var(--muted); margin:.75rem 0 .25rem; }
+        input[type=text] { width:100%; padding:.55rem .7rem; border-radius:8px; border:1px solid #334155;
+               background:#0f172a; color:var(--text); font-size:.95rem; }
+        .row { display:flex; align-items:center; gap:.5rem; margin-top:.9rem; }
+        button { margin-top:1rem; width:100%; padding:.6rem; border:none; border-radius:8px; cursor:pointer;
+               background:var(--accent); color:#03283b; font-weight:600; font-size:.95rem; }
+        button.secondary { background:#334155; color:var(--text); }
+        button:disabled { opacity:.5; cursor:not-allowed; }
+        .metrics { display:grid; grid-template-columns: repeat(2, 1fr); gap:.75rem; }
+        .metric { background:#0f172a; border-radius:8px; padding:.75rem; text-align:center; }
+        .metric .value { font-size:1.6rem; font-weight:700; }
+        .metric .name { font-size:.7rem; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
+        .status { font-size:.85rem; margin-top:1rem; min-height:1.2rem; }
+        .ok { color:#4ade80; } .err { color:#f87171; }
+        .badge { display:inline-block; padding:.15rem .5rem; border-radius:999px; font-size:.7rem; font-weight:600; }
+        .badge.up { background:#14532d; color:#4ade80; } .badge.down { background:#7f1d1d; color:#fca5a5; }
+    </style>
+</head>
+<body>
+    <h1>Order Processor</h1>
+    <p class="sub">Submit orders and watch them processed concurrently, premium-first.</p>
+
+    <div class="grid">
+        <div class="card">
+            <h2>Submit order</h2>
+            <label for="orderId">Order ID</label>
+            <input type="text" id="orderId" placeholder="e.g. order-1001"/>
+            <div class="row">
+                <input type="checkbox" id="premium"/>
+                <label for="premium" style="margin:0; color:var(--premium); font-weight:600;">Premium</label>
+            </div>
+            <button id="submitBtn">Submit order</button>
+            <button class="secondary" id="bulkBtn">Submit 100 random orders</button>
+            <div class="status" id="status"></div>
+        </div>
+
+        <div class="card">
+            <h2>Live metrics <span id="runningBadge" class="badge down">…</span></h2>
+            <div class="metrics">
+                <div class="metric"><div class="value" id="m-submitted">0</div><div class="name">Submitted</div></div>
+                <div class="metric"><div class="value" id="m-processed">0</div><div class="name">Processed</div></div>
+                <div class="metric"><div class="value" id="m-pending">0</div><div class="name">Pending</div></div>
+                <div class="metric"><div class="value" id="m-failed">0</div><div class="name">Failed</div></div>
+                <div class="metric"><div class="value" id="m-premium">0</div><div class="name">Premium done</div></div>
+                <div class="metric"><div class="value" id="m-standard">0</div><div class="name">Standard done</div></div>
+            </div>
+            <button class="secondary" id="shutdownBtn">Drain &amp; shut down</button>
+        </div>
+    </div>
+
+    <script>
+        const API = '/api/v1';
+        const $ = (id) => document.getElementById(id);
+
+        function setStatus(msg, ok) {
+            const el = $('status');
+            el.textContent = msg;
+            el.className = 'status ' + (ok ? 'ok' : 'err');
+        }
+
+        async function submitOrder(orderId, premium) {
+            const res = await fetch(API + '/orders', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ orderId, premium })
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.detail || ('HTTP ' + res.status));
+            }
+            return res.json();
+        }
+
+        $('submitBtn').addEventListener('click', async () => {
+            const orderId = $('orderId').value.trim();
+            if (!orderId) { setStatus('Order ID is required', false); return; }
+            try {
+                const r = await submitOrder(orderId, $('premium').checked);
+                setStatus(`Accepted "${r.orderId}" (total submitted: ${r.submittedCount})`, true);
+                refresh();
+            } catch (e) { setStatus(e.message, false); }
+        });
+
+        $('bulkBtn').addEventListener('click', async () => {
+            try {
+                const base = Date.now();
+                await Promise.all(Array.from({ length: 100 }, (_, i) =>
+                    submitOrder('bulk-' + base + '-' + i, Math.random() < 0.3)));
+                setStatus('Submitted 100 random orders', true);
+                refresh();
+            } catch (e) { setStatus(e.message, false); }
+        });
+
+        $('shutdownBtn').addEventListener('click', async () => {
+            try {
+                const res = await fetch(API + '/shutdown', { method: 'POST' });
+                const m = await res.json();
+                render(m);
+                setStatus('Shutdown complete', true);
+            } catch (e) { setStatus(e.message, false); }
+        });
+
+        function render(m) {
+            $('m-submitted').textContent = m.submitted;
+            $('m-processed').textContent = m.processed;
+            $('m-pending').textContent   = m.pending;
+            $('m-failed').textContent    = m.failed;
+            $('m-premium').textContent   = m.premiumProcessed;
+            $('m-standard').textContent  = m.standardProcessed;
+            const badge = $('runningBadge');
+            badge.textContent = m.running ? 'RUNNING' : 'STOPPED';
+            badge.className = 'badge ' + (m.running ? 'up' : 'down');
+        }
+
+        async function refresh() {
+            try {
+                const res = await fetch(API + '/metrics');
+                if (res.ok) render(await res.json());
+            } catch (_) { /* ignore transient errors */ }
+        }
+
+        refresh();
+        setInterval(refresh, 1000);
+    </script>
+</body>
+</html>
+

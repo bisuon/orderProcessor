@@ -1,5 +1,8 @@
 package algo.orderprocessor;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.time.Duration;
 import java.util.Objects;
 import java.util.concurrent.BlockingQueue;
@@ -19,9 +22,11 @@ import java.util.function.Consumer;
  * - concurrent worker pool
  * - premium-first priority scheduling
  * - graceful shutdown that drains queued orders
+ * - structured failure logging for observability
  * - lightweight metrics for tests and monitoring
  */
 public final class OrderProcessor implements AutoCloseable {
+    private static final Logger log = LoggerFactory.getLogger(OrderProcessor.class);
     private static final long POLL_TIMEOUT_MILLIS = 100L;
 
     private final int workerCount;
@@ -151,6 +156,8 @@ public final class OrderProcessor implements AutoCloseable {
             processedCount.increment();
         } catch (RuntimeException ex) {
             failedCount.increment();
+            log.error("Order processing failed: orderId={}, premium={}, error={}",
+                order.orderId(), order.isPremium(), ex.getClass().getSimpleName(), ex);
         }
     }
 
@@ -188,4 +195,3 @@ public final class OrderProcessor implements AutoCloseable {
         }
     }
 }
-
