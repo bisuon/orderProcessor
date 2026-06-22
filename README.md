@@ -8,8 +8,8 @@ Orders are either **Standard** or **Premium**; premium orders are always process
 
 | Requirement        | How it is addressed |
 |--------------------|---------------------|
-| **Concurrency**    | A fixed pool of worker threads pulls from a single shared queue. Counters use `LongAdder`/atomics, so there are no locks on the hot path. |
-| **Performance & Load** | A test submits **100,000 orders from 8 concurrent producers** and asserts every one is processed. The demo runs the same volume end-to-end. |
+| **Concurrency**    | A fixed pool of worker threads pulls from a single shared queue. Counters use `LongAdder`/atomics, so there are no locks on the hot path. The web UI also includes a browser-driven concurrency demo that submits orders with multiple concurrent HTTP workers and displays throughput live. |
+| **Performance & Load** | A test submits **100,000 orders from 8 concurrent producers** and asserts every one is processed. The UI can also run an interactive load demo so reviewers can see submission and drain timings visually. |
 | **Priority Handling** | A `PriorityBlockingQueue` ordered by `Order.compareTo` (premium first, then creation time). A stable per-order sequence number breaks ties so equal-priority orders keep FIFO order. |
 | **Shutdown**       | `shutdown()` stops accepting new orders, then **drains the queue** before workers exit. Spring graceful shutdown drains in-flight HTTP requests too. |
 | **API**            | Spring Web REST controllers with DTOs, bean validation and RFC 7807 (`ProblemDetail`) error responses. |
@@ -71,6 +71,21 @@ Configuration (env vars or `application.yml`):
 - `app.cors.allowed-origins` (default `*`)
 
 Then open the UI at **http://localhost:8080/**.
+
+### UI demo: Concurrency + Performance & Load
+
+The home page now includes a **Concurrency & Load Demo** panel:
+- choose total orders (e.g. `1000`)
+- choose concurrent submitters (e.g. `8`)
+- click **Run browser load demo**
+
+It will:
+- submit real HTTP requests to `POST /api/v1/orders`
+- drive multiple concurrent browser workers in parallel
+- wait until the queue drains
+- display submission time, end-to-end drain time, and approximate throughput
+
+This gives reviewers a quick, visual demonstration of the coding-test requirements without reading the test code.
 
 ## REST API (`/api/v1`)
 

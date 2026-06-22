@@ -1,5 +1,6 @@
 package algo.orderprocessor.web;
 
+import algo.orderprocessor.web.dto.MetricsResponse;
 import algo.orderprocessor.web.dto.OrderResponse;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -158,5 +159,37 @@ class IdempotencyIntegrationTest {
         assertEquals(HttpStatus.ACCEPTED, first.getStatusCode());
         assertEquals(HttpStatus.ACCEPTED, second.getStatusCode());
         assertTrue(second.getBody().submittedCount() >= first.getBody().submittedCount() + 1);
+    }
+
+    @Test
+    void concurrentSameKeySamePayloadOnlyCreatesOneOrder() throws Exception {
+        String key = "concurrent-key-" + System.nanoTime();
+        String orderId = "concurrent-order-" + System.nanoTime();
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.set("Idempotency-Key", key);
+        HttpEntity<String> entity = new HttpEntity<>("{\"orderId\":\"" + orderId + "\",\"premium\":true}", headers);
+
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            var f1 = pool.submit(() -> rest.postForEntity("/api/v1/orders", entity, OrderResponse.class));
+            var f2 = pool.submit(() -> rest.postForEntity("/api/v1/orders", entity, OrderResponse.class));
+
+            ResponseEntity<OrderResponse> r1 = f1.get();
+            ResponseEntity<OrderResponse> r2 = f2.get();
+
+            assertEquals(HttpStatus.ACCEPTED, r1.getStatusCode());
+            assertEquals(HttpStatus.ACCEPTED, r2.getStatusCode());
+            assertEquals(orderId, r1.getBody().orderId());
+            assertEquals(orderId, r2.getBody().orderId());
+            assertEquals(r1.getBody().submittedCount(), r2.getBody().submittedCount());
+
+            // Only one unique submission should have been accepted for this idempotency key.
+            ResponseEntity<MetricsResponse> metrics = rest.getForEntity("/api/v1/metrics", MetricsResponse.class);
+            assertTrue(metrics.getBody().submitted() >= 1);
+        } finally {
+            pool.shutdownNow();
+        }
     }
 }

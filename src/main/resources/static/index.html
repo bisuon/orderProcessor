@@ -11,13 +11,14 @@
                background:var(--bg); color:var(--text); padding:2rem; }
         h1 { margin:0 0 .25rem; font-size:1.5rem; }
         p.sub { color:var(--muted); margin:0 0 1.5rem; }
-        .grid { display:grid; gap:1.5rem; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); max-width:900px; }
+        .grid { display:grid; gap:1.5rem; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); max-width:1100px; }
         .card { background:var(--card); border-radius:12px; padding:1.25rem 1.5rem; box-shadow:0 4px 20px rgba(0,0,0,.3); }
         .card h2 { margin:0 0 1rem; font-size:1rem; color:var(--accent); text-transform:uppercase; letter-spacing:.05em; }
         label { display:block; font-size:.8rem; color:var(--muted); margin:.75rem 0 .25rem; }
-        input[type=text] { width:100%; padding:.55rem .7rem; border-radius:8px; border:1px solid #334155;
+        input[type=text], input[type=number] { width:100%; padding:.55rem .7rem; border-radius:8px; border:1px solid #334155;
                background:#0f172a; color:var(--text); font-size:.95rem; }
         .row { display:flex; align-items:center; gap:.5rem; margin-top:.9rem; }
+        .two-col { display:grid; gap:.75rem; grid-template-columns: repeat(2, minmax(0, 1fr)); }
         button { margin-top:1rem; width:100%; padding:.6rem; border:none; border-radius:8px; cursor:pointer;
                background:var(--accent); color:#03283b; font-weight:600; font-size:.95rem; }
         button.secondary { background:#334155; color:var(--text); }
@@ -30,11 +31,16 @@
         .ok { color:#4ade80; } .err { color:#f87171; }
         .badge { display:inline-block; padding:.15rem .5rem; border-radius:999px; font-size:.7rem; font-weight:600; }
         .badge.up { background:#14532d; color:#4ade80; } .badge.down { background:#7f1d1d; color:#fca5a5; }
+        .hint { color:var(--muted); font-size:.8rem; line-height:1.4; margin-top:.5rem; }
+        .progress { height:10px; border-radius:999px; background:#0f172a; overflow:hidden; margin-top:1rem; }
+        .progress > div { height:100%; width:0; background:linear-gradient(90deg, #38bdf8, #4ade80); transition:width .15s ease-out; }
+        .result-list { margin:1rem 0 0; padding-left:1rem; color:var(--text); }
+        .result-list li { margin:.35rem 0; }
     </style>
 </head>
 <body>
     <h1>Order Processor</h1>
-    <p class="sub">Submit orders and watch them processed concurrently, premium-first.</p>
+    <p class="sub">Submit orders, watch them processed concurrently, and run an end-to-end load demo from the browser.</p>
 
     <div class="grid">
         <div class="card">
@@ -60,7 +66,30 @@
                 <div class="metric"><div class="value" id="m-premium">0</div><div class="name">Premium done</div></div>
                 <div class="metric"><div class="value" id="m-standard">0</div><div class="name">Standard done</div></div>
             </div>
-            <button class="secondary" id="shutdownBtn">Drain &amp; shut down</button>
+            <button class="secondary" id="refreshBtn">Refresh metrics</button>
+            <div class="hint">Metrics update every second. Use the load demo below to visualize concurrent submissions and drain time.</div>
+        </div>
+
+        <div class="card" style="grid-column: 1 / -1;">
+            <h2>Concurrency &amp; load demo</h2>
+            <div class="two-col">
+                <div>
+                    <label for="loadOrders">Orders</label>
+                    <input type="number" id="loadOrders" min="1" max="5000" step="1" value="1000"/>
+                </div>
+                <div>
+                    <label for="loadConcurrency">Concurrent submitters</label>
+                    <input type="number" id="loadConcurrency" min="1" max="64" step="1" value="8"/>
+                </div>
+            </div>
+            <button id="runLoadBtn">Run browser load demo</button>
+            <div class="hint">
+                This sends real HTTP requests to <code>/api/v1/orders</code> using multiple concurrent browser workers, then waits until the backlog drains.
+                It gives a visible demo of <strong>Concurrency</strong> and <strong>Performance &amp; Load</strong> without changing the core engine.
+            </div>
+            <div class="progress"><div id="loadProgressBar"></div></div>
+            <div class="status" id="loadStatus"></div>
+            <ul class="result-list" id="loadResults"></ul>
         </div>
     </div>
 
@@ -74,10 +103,36 @@
             el.className = 'status ' + (ok ? 'ok' : 'err');
         }
 
-        async function submitOrder(orderId, premium) {
+        function setLoadStatus(msg, ok) {
+            const el = $('loadStatus');
+            el.textContent = msg;
+            el.className = 'status ' + (ok ? 'ok' : 'err');
+        }
+
+        function setProgress(ratio) {
+            $('loadProgressBar').style.width = `${Math.max(0, Math.min(100, ratio * 100))}%`;
+        }
+
+        function renderResults(lines) {
+            $('loadResults').innerHTML = lines.map((line) => `<li>${line}</li>`).join('');
+        }
+
+        async function getMetrics() {
+            const res = await fetch(API + '/metrics');
+            if (!res.ok) {
+                throw new Error('Unable to fetch metrics');
+            }
+            return res.json();
+        }
+
+        async function submitOrder(orderId, premium, idempotencyKey = null) {
+            const headers = { 'Content-Type': 'application/json' };
+            if (idempotencyKey) {
+                headers['Idempotency-Key'] = idempotencyKey;
+            }
             const res = await fetch(API + '/orders', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers,
                 body: JSON.stringify({ orderId, premium })
             });
             if (!res.ok) {
@@ -107,13 +162,99 @@
             } catch (e) { setStatus(e.message, false); }
         });
 
-        $('shutdownBtn').addEventListener('click', async () => {
+        $('refreshBtn').addEventListener('click', () => refresh());
+
+        async function runLoadDemo() {
+            const totalOrders = Number.parseInt($('loadOrders').value, 10);
+            const submitters = Number.parseInt($('loadConcurrency').value, 10);
+
+            if (!Number.isFinite(totalOrders) || totalOrders < 1 || totalOrders > 5000) {
+                setLoadStatus('Orders must be between 1 and 5000.', false);
+                return;
+            }
+            if (!Number.isFinite(submitters) || submitters < 1 || submitters > 64) {
+                setLoadStatus('Concurrent submitters must be between 1 and 64.', false);
+                return;
+            }
+
+            const runLoadBtn = $('runLoadBtn');
+            runLoadBtn.disabled = true;
+            setProgress(0);
+            renderResults([]);
+
+            const baseline = await getMetrics();
+            const startedAt = performance.now();
+            const runId = Date.now();
+            let submitted = 0;
+            let failed = 0;
+
+            setLoadStatus(`Submitting ${totalOrders} orders with ${submitters} concurrent browser workers...`, true);
+
+            const nextIndex = { value: 0 };
+            async function worker(workerId) {
+                while (true) {
+                    const current = nextIndex.value++;
+                    if (current >= totalOrders) {
+                        return;
+                    }
+                    const premium = current % 4 === 0;
+                    try {
+                        await submitOrder(`load-${runId}-${workerId}-${current}`, premium);
+                        submitted++;
+                    } catch (err) {
+                        failed++;
+                    }
+                    setProgress((submitted + failed) / totalOrders);
+                }
+            }
+
             try {
-                const res = await fetch(API + '/shutdown', { method: 'POST' });
-                const m = await res.json();
-                render(m);
-                setStatus('Shutdown complete', true);
-            } catch (e) { setStatus(e.message, false); }
+                await Promise.all(Array.from({ length: submitters }, (_, i) => worker(i)));
+            } catch (e) {
+                runLoadBtn.disabled = false;
+                setLoadStatus(`Load demo aborted: ${e.message}`, false);
+                return;
+            }
+
+            const submitDurationMs = performance.now() - startedAt;
+            setLoadStatus('Submissions finished. Waiting for the processor queue to drain...', true);
+
+            const processedTarget = baseline.processed + submitted;
+            const failedTarget = baseline.failed + failed;
+            const deadline = Date.now() + 30000;
+            let finalMetrics = await getMetrics();
+            while (Date.now() < deadline) {
+                finalMetrics = await getMetrics();
+                if (finalMetrics.processed >= processedTarget && finalMetrics.failed >= failedTarget) {
+                    break;
+                }
+                await new Promise((resolve) => setTimeout(resolve, 200));
+            }
+            const totalDurationMs = performance.now() - startedAt;
+
+            render(finalMetrics);
+            renderResults([
+                `Orders requested: ${totalOrders}`,
+                `Accepted by API: ${submitted}`,
+                `Rejected/failed submissions: ${failed}`,
+                `Concurrent submitters: ${submitters}`,
+                `Submission time: ${submitDurationMs.toFixed(0)} ms`,
+                `End-to-end drain time: ${totalDurationMs.toFixed(0)} ms`,
+                `Approx. submit throughput: ${(submitted / Math.max(submitDurationMs / 1000, 0.001)).toFixed(1)} orders/sec`,
+                `Approx. end-to-end throughput: ${(submitted / Math.max(totalDurationMs / 1000, 0.001)).toFixed(1)} orders/sec`,
+                `Newly processed in run: ${Math.max(0, finalMetrics.processed - baseline.processed)}`,
+                `Pending after run: ${finalMetrics.pending}`
+            ]);
+            setProgress(1);
+            setLoadStatus('Load demo complete — see timings and throughput below.', true);
+            runLoadBtn.disabled = false;
+        }
+
+        $('runLoadBtn').addEventListener('click', () => {
+            runLoadDemo().catch((e) => {
+                $('runLoadBtn').disabled = false;
+                setLoadStatus(e.message, false);
+            });
         });
 
         function render(m) {
@@ -130,8 +271,7 @@
 
         async function refresh() {
             try {
-                const res = await fetch(API + '/metrics');
-                if (res.ok) render(await res.json());
+                render(await getMetrics());
             } catch (_) { /* ignore transient errors */ }
         }
 
@@ -140,4 +280,3 @@
     </script>
 </body>
 </html>
-

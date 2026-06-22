@@ -9,6 +9,8 @@ import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.util.concurrent.CompletableFuture;
+
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doThrow;
@@ -34,7 +36,7 @@ class OrderControllerTest {
     @Test
     void submitOrderIsAccepted() throws Exception {
         when(orderService.getSubmittedCount()).thenReturn(1L);
-        when(idempotencyStore.lookup(anyString(), anyString())).thenReturn(IdempotencyStore.LookupResult.miss());
+        when(idempotencyStore.claim(anyString(), anyString())).thenReturn(IdempotencyStore.ClaimResult.newClaim(new CompletableFuture<>()));
 
         mockMvc.perform(post("/api/v1/orders")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -59,10 +61,23 @@ class OrderControllerTest {
     }
 
     @Test
+    void duplicateOrderIdReturns409() throws Exception {
+        doThrow(new IllegalStateException("Order with id 'o-1' already exists"))
+            .when(orderService).submit(any(Order.class));
+        when(idempotencyStore.claim(anyString(), anyString())).thenReturn(IdempotencyStore.ClaimResult.newClaim(new CompletableFuture<>()));
+
+        mockMvc.perform(post("/api/v1/orders")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"orderId\":\"o-1\",\"premium\":true}"))
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("already exists")));
+    }
+
+    @Test
     void submitAfterShutdownReturns409() throws Exception {
         doThrow(new IllegalStateException("OrderProcessor is shutting down; no new orders are accepted"))
             .when(orderService).submit(any(Order.class));
-        when(idempotencyStore.lookup(anyString(), anyString())).thenReturn(IdempotencyStore.LookupResult.miss());
+        when(idempotencyStore.claim(anyString(), anyString())).thenReturn(IdempotencyStore.ClaimResult.newClaim(new CompletableFuture<>()));
 
         mockMvc.perform(post("/api/v1/orders")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -73,7 +88,7 @@ class OrderControllerTest {
 
     @Test
     void idempotencyKeyPayloadConflictReturns409() throws Exception {
-        when(idempotencyStore.lookup(anyString(), anyString())).thenReturn(IdempotencyStore.LookupResult.conflict());
+        when(idempotencyStore.claim(anyString(), anyString())).thenReturn(IdempotencyStore.ClaimResult.conflict());
 
         mockMvc.perform(post("/api/v1/orders")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -81,19 +96,6 @@ class OrderControllerTest {
                 .content("{\"orderId\":\"o1\",\"premium\":false}"))
             .andExpect(status().isConflict())
             .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("Idempotency-Key")));
-    }
-
-    @Test
-    void duplicateOrderIdReturns409() throws Exception {
-        doThrow(new IllegalStateException("Order with id 'o-1' already exists"))
-            .when(orderService).submit(any(Order.class));
-        when(idempotencyStore.lookup(anyString(), anyString())).thenReturn(IdempotencyStore.LookupResult.miss());
-
-        mockMvc.perform(post("/api/v1/orders")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"orderId\":\"o-1\",\"premium\":true}"))
-            .andExpect(status().isConflict())
-            .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("already exists")));
     }
 
     @Test

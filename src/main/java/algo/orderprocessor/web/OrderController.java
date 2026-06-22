@@ -26,6 +26,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.concurrent.CompletionException;
 
 /**
  * REST API for submitting orders and observing processing metrics.
@@ -64,27 +65,46 @@ public class OrderController {
         @Parameter(description = "Unique key for idempotent submissions.", example = "uuid-12345")
         String idempotencyKey) {
 
+        long creationTime = request.creationTime() != null
+            ? request.creationTime()
+            : System.currentTimeMillis();
         String requestSignature = request.orderId() + "|" + request.premium() + "|" + request.creationTime();
+
         if (idempotencyKey != null && !idempotencyKey.isBlank()) {
-            IdempotencyStore.LookupResult lookup = idempotencyStore.lookup(idempotencyKey, requestSignature);
-            if (lookup.status() == IdempotencyStore.LookupStatus.HIT) {
-                return lookup.response();
+            IdempotencyStore.ClaimResult claim = idempotencyStore.claim(idempotencyKey, requestSignature);
+            if (claim.status() == IdempotencyStore.LookupStatus.HIT || claim.status() == IdempotencyStore.LookupStatus.PENDING) {
+                return awaitIdempotentResponse(claim.future());
             }
-            if (lookup.status() == IdempotencyStore.LookupStatus.CONFLICT) {
+            if (claim.status() == IdempotencyStore.LookupStatus.CONFLICT) {
                 throw new IllegalStateException("Idempotency-Key has already been used with a different request payload");
             }
         }
 
-        long creationTime = request.creationTime() != null
-            ? request.creationTime()
-            : System.currentTimeMillis();
-        orderService.submit(new Order(request.orderId(), request.premium(), creationTime));
-
-        OrderResponse response = new OrderResponse(true, request.orderId(), request.premium(), orderService.getSubmittedCount());
-        if (idempotencyKey != null && !idempotencyKey.isBlank()) {
-            idempotencyStore.recordResponse(idempotencyKey, requestSignature, response);
+        try {
+            orderService.submit(new Order(request.orderId(), request.premium(), creationTime));
+            OrderResponse response = new OrderResponse(true, request.orderId(), request.premium(), orderService.getSubmittedCount());
+            if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+                idempotencyStore.complete(idempotencyKey, requestSignature, response);
+            }
+            return response;
+        } catch (RuntimeException ex) {
+            if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+                idempotencyStore.fail(idempotencyKey, requestSignature, ex);
+            }
+            throw ex;
         }
-        return response;
+    }
+
+    private OrderResponse awaitIdempotentResponse(java.util.concurrent.CompletableFuture<OrderResponse> future) {
+        try {
+            return future.join();
+        } catch (CompletionException ex) {
+            Throwable cause = ex.getCause();
+            if (cause instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            throw new IllegalStateException(cause == null ? ex : cause);
+        }
     }
 
     @GetMapping("/orders/{orderId}")
